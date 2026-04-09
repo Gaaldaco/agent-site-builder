@@ -43,11 +43,11 @@ async function getRedis(): Promise<any> {
     return null;
   }
   try {
-    // Use eval-require so the TypeScript compiler doesn't try to resolve
-    // 'ioredis' at build time — it's only needed at runtime on Railway.
-    const dynamicRequire = eval("require") as NodeRequire;
-    const Redis = dynamicRequire("ioredis");
-    const Ctor = Redis.default || Redis;
+    // Real dynamic import of a literal specifier so Next.js's standalone
+    // build statically traces and bundles ioredis into the output.
+    // @ts-ignore — ioredis types are only present when node_modules has the pkg
+    const mod = await import("ioredis");
+    const Ctor = (mod as any).default || (mod as any).Redis || mod;
     const client = new Ctor(url, {
       maxRetriesPerRequest: 2,
       lazyConnect: false,
