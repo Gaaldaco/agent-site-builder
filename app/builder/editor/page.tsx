@@ -137,6 +137,7 @@ export default function EditorPage() {
           selector: selection.selector,
           elementOuterHtml: selection.outerHtml,
           request: editRequest,
+          sessionId: state.sessionId,
         }),
       });
       if (!res.ok) {

@@ -79,6 +79,7 @@ export default function RefinePage() {
           html: chosen.html,
           intake: state.intake,
           theme: state.theme,
+          sessionId: state.sessionId,
         }),
       });
 

@@ -6,8 +6,10 @@ import { emptyIntake, type ProjectState } from "./types";
 const KEY = "agent-site-builder::project";
 
 const initialState: ProjectState = {
+  sessionId: null,
   intake: emptyIntake,
   theme: {},
+  themeRecommendation: null,
   drafts: [],
   chosenDraftId: null,
   finalHtml: null,
@@ -43,13 +45,39 @@ export function resetProject() {
   window.localStorage.removeItem(KEY);
 }
 
+async function ensureSessionId(current: string | null): Promise<string> {
+  if (current) return current;
+  try {
+    const res = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.session?.id || `local_${Date.now()}`;
+  } catch {
+    return `local_${Date.now()}`;
+  }
+}
+
 export function useProject() {
   const [state, setState] = useState<ProjectState>(initialState);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    setState(loadProject());
+    const loaded = loadProject();
+    setState(loaded);
     setHydrated(true);
+    if (!loaded.sessionId) {
+      void ensureSessionId(null).then((id) => {
+        setState((prev) => {
+          const next = { ...prev, sessionId: id };
+          saveProject(next);
+          return next;
+        });
+      });
+    }
   }, []);
 
   const update = useCallback((patch: Partial<ProjectState>) => {

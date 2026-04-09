@@ -65,6 +65,14 @@ export type ThemeSelection = {
   iconPackId: string;
 };
 
+export type ThemeRecommendation = {
+  color: Array<{ id: string; reason: string }>;
+  font: Array<{ id: string; reason: string }>;
+  button: Array<{ id: string; reason: string }>;
+  icon: Array<{ id: string; reason: string }>;
+  overallReasoning: string;
+};
+
 export type Draft = {
   id: string;
   label: string; // A | B | C | D
@@ -87,8 +95,10 @@ export type SubagentStatus = {
 };
 
 export type ProjectState = {
+  sessionId: string | null;
   intake: IntakeAnswers;
   theme: Partial<ThemeSelection>;
+  themeRecommendation: ThemeRecommendation | null;
   drafts: Draft[];
   chosenDraftId: string | null;
   finalHtml: string | null;

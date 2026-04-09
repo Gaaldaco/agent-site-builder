@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { runAgent, extractHtml } from "@/lib/agents/client";
+import { runAgent, extractHtml, isRenderableHtml } from "@/lib/agents/client";
 import { SUBAGENT_DEFINITIONS } from "@/lib/agents/prompts";
 import type { IntakeAnswers, ThemeSelection } from "@/lib/types";
+import { appendHistory, updateSession } from "@/lib/session";
 
 export const runtime = "nodejs";
 export const maxDuration = 600;
@@ -15,6 +16,7 @@ export async function POST(req: NextRequest) {
     html: string;
     intake: IntakeAnswers;
     theme: Partial<ThemeSelection>;
+    sessionId?: string;
   };
 
   if (!body?.html) {
@@ -42,26 +44,41 @@ export async function POST(req: NextRequest) {
 
           try {
             const raw = await runAgent({
-              system: `You are one of six subagents in an orchestrated website-polish pipeline. Your only role: ${sub.role}. Return the FULL updated HTML document only, no commentary.`,
+              system: `You are one of six subagents in an orchestrated website-polish pipeline. Your only role: ${sub.role}. Return the FULL updated HTML document only, no commentary. NEVER add animation-play-state:paused or scroll-trigger classes — there is no JavaScript available to unpause them.`,
               prompt: sub.instruction(currentHtml, body.intake, body.theme),
-              maxTokens: 8000,
+              maxTokens: 16000,
             });
 
             const nextHtml = extractHtml(raw);
-            if (nextHtml.toLowerCase().includes("<html")) {
+            // Only accept the update if it's a complete, renderable document.
+            // Otherwise keep the prior-step HTML so we never regress to blank.
+            if (isRenderableHtml(nextHtml)) {
               currentHtml = nextHtml;
+              send("subagent:done", {
+                name: sub.name,
+                message: `${sub.name} pass complete`,
+              });
+            } else {
+              send("subagent:done", {
+                name: sub.name,
+                message: `${sub.name} output rejected, kept prior HTML`,
+              });
             }
-
-            send("subagent:done", {
-              name: sub.name,
-              message: `${sub.name} pass complete`,
-            });
           } catch (subErr: any) {
             send("subagent:error", {
               name: sub.name,
               message: subErr?.message || "subagent failed",
             });
           }
+        }
+
+        if (body.sessionId) {
+          await updateSession(body.sessionId, { finalHtml: currentHtml });
+          await appendHistory(body.sessionId, {
+            role: "assistant",
+            stage: "refine",
+            text: `Subagent pipeline complete. Final HTML length: ${currentHtml.length}`,
+          });
         }
 
         send("final", { html: currentHtml });

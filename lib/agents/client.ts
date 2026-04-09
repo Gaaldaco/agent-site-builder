@@ -75,13 +75,44 @@ export async function runAgentStream({
 export function extractHtml(raw: string): string {
   // Strip possible code fences or commentary.
   const fenceMatch = raw.match(/```(?:html)?\s*([\s\S]*?)```/);
-  if (fenceMatch) return fenceMatch[1].trim();
+  if (fenceMatch) raw = fenceMatch[1];
 
-  const doctypeIdx = raw.toLowerCase().indexOf("<!doctype");
-  if (doctypeIdx >= 0) return raw.slice(doctypeIdx).trim();
+  const lower = raw.toLowerCase();
+  const doctypeIdx = lower.indexOf("<!doctype");
+  if (doctypeIdx >= 0) {
+    const closeIdx = lower.lastIndexOf("</html>");
+    if (closeIdx > doctypeIdx) return raw.slice(doctypeIdx, closeIdx + 7).trim();
+    return raw.slice(doctypeIdx).trim();
+  }
 
-  const htmlIdx = raw.toLowerCase().indexOf("<html");
-  if (htmlIdx >= 0) return raw.slice(htmlIdx).trim();
+  const htmlIdx = lower.indexOf("<html");
+  if (htmlIdx >= 0) {
+    const closeIdx = lower.lastIndexOf("</html>");
+    if (closeIdx > htmlIdx)
+      return "<!doctype html>\n" + raw.slice(htmlIdx, closeIdx + 7).trim();
+    return "<!doctype html>\n" + raw.slice(htmlIdx).trim();
+  }
 
   return raw.trim();
+}
+
+/**
+ * Quick sanity check: does this string look like a complete HTML document
+ * that would actually render something visible?
+ */
+export function isRenderableHtml(html: string): boolean {
+  if (!html || html.length < 200) return false;
+  const lower = html.toLowerCase();
+  if (!lower.includes("<html")) return false;
+  if (!lower.includes("</html>")) return false;
+  if (!lower.includes("<body")) return false;
+  // Reject documents that suspend all content behind paused animations
+  // without any JS to resume them (our "nothing rendered" bug).
+  if (
+    lower.includes("animation-play-state: paused") ||
+    lower.includes("animation-play-state:paused")
+  ) {
+    if (!lower.includes("<script")) return false;
+  }
+  return true;
 }

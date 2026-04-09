@@ -11,6 +11,9 @@ export default function DraftsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [failures, setFailures] = useState<{ label: string; error: string }[]>(
+    []
+  );
   const [selectedId, setSelectedId] = useState<string | null>(
     state.chosenDraftId
   );
@@ -26,18 +29,28 @@ export default function DraftsPage() {
   async function generate() {
     setLoading(true);
     setError(null);
+    setFailures([]);
     try {
       const res = await fetch("/api/agent/drafts", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ intake: state.intake, theme: state.theme }),
+        body: JSON.stringify({
+          intake: state.intake,
+          theme: state.theme,
+          sessionId: state.sessionId,
+        }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
+        if (j.failures) setFailures(j.failures);
         throw new Error(j.error || `HTTP ${res.status}`);
       }
-      const data = (await res.json()) as { drafts: Draft[] };
+      const data = (await res.json()) as {
+        drafts: Draft[];
+        failures?: { label: string; error: string }[];
+      };
       update({ drafts: data.drafts });
+      setFailures(data.failures || []);
     } catch (err: any) {
       setError(err?.message || "Failed to generate drafts.");
     } finally {
@@ -93,6 +106,33 @@ export default function DraftsPage() {
             <p className="mt-3 opacity-60 text-xs">
               Check ANTHROPIC_API_KEY in your env, then retry.
             </p>
+          </div>
+        )}
+
+        {failures.length > 0 && !loading && (
+          <div
+            className="mb-8 p-5 border-l-2 text-sm"
+            style={{
+              borderColor: "#ffb940",
+              background: "rgba(255, 185, 64, 0.05)",
+            }}
+          >
+            <p className="mono-label mb-2" style={{ color: "#ffb940" }}>
+              ▸ partial result — {failures.length} of 4 variants failed
+            </p>
+            <div className="space-y-1 text-xs opacity-80">
+              {failures.map((f) => (
+                <p key={f.label}>
+                  variant {f.label}: {f.error}
+                </p>
+              ))}
+            </div>
+            <button
+              className="btn-ghost mt-3"
+              onClick={generate}
+            >
+              retry all
+            </button>
           </div>
         )}
 

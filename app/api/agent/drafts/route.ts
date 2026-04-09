@@ -1,39 +1,83 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runAgent, extractHtml } from "@/lib/agents/client";
+import { runAgent, extractHtml, isRenderableHtml } from "@/lib/agents/client";
 import { DRAFTER_SYSTEM, drafterUserPrompt } from "@/lib/agents/prompts";
 import type { IntakeAnswers, ThemeSelection } from "@/lib/types";
+import {
+  appendHistory,
+  getSession,
+  historyDigest,
+  updateSession,
+} from "@/lib/session";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const maxDuration = 600;
 
 const VARIANTS = [
   {
     label: "A",
     concept:
-      "Editorial. Big display type, generous whitespace, magazine-style grid, restrained color.",
+      "Editorial. Big display type, generous whitespace, magazine-style grid, restrained color. Calm confidence.",
   },
   {
     label: "B",
     concept:
-      "Bold. Maximal hero, confident CTAs, strong color blocks, gestural shapes.",
+      "Bold. Maximal hero, confident CTAs, strong color blocks, gestural shapes, big display numerals.",
   },
   {
     label: "C",
     concept:
-      "Minimal. Single-column flow, hairline dividers, tiny accent touches only.",
+      "Minimal. Single-column flow, hairline dividers, tiny accent touches only, short punchy copy.",
   },
   {
     label: "D",
     concept:
-      "Modular. Card-based sections, structured grid, systematic and technical.",
+      "Modular. Card-based sections, structured grid, systematic and technical feel with strong hierarchy.",
   },
 ];
+
+const MAX_ATTEMPTS = 2;
+
+async function draftOne(
+  variant: (typeof VARIANTS)[number],
+  intake: IntakeAnswers,
+  theme: Partial<ThemeSelection>,
+  memoryContext: string
+) {
+  let lastErr: unknown = null;
+  const system = memoryContext
+    ? `${DRAFTER_SYSTEM}\n\nPRIOR SESSION CONTEXT (for continuity, do not repeat verbatim):\n${memoryContext}`
+    : DRAFTER_SYSTEM;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const raw = await runAgent({
+        system,
+        prompt: drafterUserPrompt(intake, theme, variant),
+        maxTokens: 16000,
+      });
+      const html = extractHtml(raw);
+      if (isRenderableHtml(html)) {
+        return { ok: true as const, variant, html };
+      }
+      lastErr = new Error(
+        `variant ${variant.label} attempt ${attempt} returned un-renderable HTML`
+      );
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  return {
+    ok: false as const,
+    variant,
+    error: (lastErr as Error)?.message || "unknown drafter error",
+  };
+}
 
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as {
       intake: IntakeAnswers;
       theme: Partial<ThemeSelection>;
+      sessionId?: string;
     };
 
     if (!body?.intake || !body?.theme) {
@@ -43,23 +87,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const results = await Promise.all(
-      VARIANTS.map(async (variant) => {
-        const raw = await runAgent({
-          system: DRAFTER_SYSTEM,
-          prompt: drafterUserPrompt(body.intake, body.theme, variant),
-          maxTokens: 8000,
-        });
-        return {
-          id: variant.label.toLowerCase(),
-          label: variant.label,
-          concept: variant.concept,
-          html: extractHtml(raw),
-        };
-      })
+    let memoryContext = "";
+    if (body.sessionId) {
+      const session = await getSession(body.sessionId);
+      memoryContext = historyDigest(session);
+      await updateSession(body.sessionId, {
+        intake: body.intake,
+        theme: body.theme,
+      });
+      await appendHistory(body.sessionId, {
+        role: "user",
+        stage: "drafts",
+        text: `Requested 4 drafts with theme: color=${body.theme.colorPackId} font=${body.theme.fontPackId} button=${body.theme.buttonPackId} icon=${body.theme.iconPackId}`,
+      });
+    }
+
+    const settled = await Promise.all(
+      VARIANTS.map((v) => draftOne(v, body.intake, body.theme, memoryContext))
     );
 
-    return NextResponse.json({ drafts: results });
+    const drafts = settled
+      .filter((r) => r.ok)
+      .map((r) => ({
+        id: r.variant.label.toLowerCase(),
+        label: r.variant.label,
+        concept: r.variant.concept,
+        html: (r as any).html as string,
+      }));
+
+    const failures = settled
+      .filter((r) => !r.ok)
+      .map((r) => ({ label: r.variant.label, error: (r as any).error }));
+
+    if (drafts.length === 0) {
+      return NextResponse.json(
+        { error: "all drafters failed", failures },
+        { status: 500 }
+      );
+    }
+
+    if (body.sessionId) {
+      await updateSession(body.sessionId, { drafts });
+      await appendHistory(body.sessionId, {
+        role: "assistant",
+        stage: "drafts",
+        text: `Produced ${drafts.length} draft variants: ${drafts.map((d) => d.label).join(", ")}${failures.length ? `. Failures: ${failures.map((f) => f.label).join(", ")}` : ""}`,
+      });
+    }
+
+    return NextResponse.json({ drafts, failures });
   } catch (err: any) {
     console.error("drafts error", err);
     return NextResponse.json(
