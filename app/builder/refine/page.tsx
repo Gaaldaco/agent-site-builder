@@ -163,9 +163,8 @@ export default function RefinePage() {
           className="font-display leading-[0.95] mb-12"
           style={{ fontSize: "clamp(2.2rem, 4.5vw, 3.6rem)", fontWeight: 300 }}
         >
-          Six agents,
-          <span className="italic"> working </span>
-          in sequence
+          Five specialists,
+          <span className="italic"> in parallel</span>
           <span style={{ color: "var(--violet)" }}>.</span>
         </h2>
 

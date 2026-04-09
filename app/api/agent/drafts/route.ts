@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runAgent, extractHtml, isRenderableHtml } from "@/lib/agents/client";
-import { DRAFTER_SYSTEM, drafterUserPrompt } from "@/lib/agents/prompts";
+import {
+  DRAFTER_SYSTEM,
+  drafterUserPrompt,
+  type ResolvedTheme,
+} from "@/lib/agents/prompts";
 import type { IntakeAnswers, ThemeSelection } from "@/lib/types";
 import {
   appendHistory,
@@ -8,6 +12,7 @@ import {
   historyDigest,
   updateSession,
 } from "@/lib/session";
+import { packById } from "@/lib/db/packs";
 
 export const runtime = "nodejs";
 export const maxDuration = 600;
@@ -37,10 +42,35 @@ const VARIANTS = [
 
 const MAX_ATTEMPTS = 2;
 
+async function resolveTheme(
+  theme: Partial<ThemeSelection>
+): Promise<ResolvedTheme> {
+  const [color, font, button, icon, shape] = await Promise.all([
+    theme.colorPackId ? packById(theme.colorPackId) : Promise.resolve(null),
+    theme.fontPackId ? packById(theme.fontPackId) : Promise.resolve(null),
+    theme.buttonPackId ? packById(theme.buttonPackId) : Promise.resolve(null),
+    theme.iconPackId ? packById(theme.iconPackId) : Promise.resolve(null),
+    theme.shapePackId ? packById(theme.shapePackId) : Promise.resolve(null),
+  ]);
+  return {
+    color: color
+      ? { name: color.name, mood: color.mood, data: color.data }
+      : null,
+    font: font ? { name: font.name, mood: font.mood, data: font.data } : null,
+    button: button
+      ? { name: button.name, mood: button.mood, data: button.data }
+      : null,
+    icon: icon ? { name: icon.name, mood: icon.mood, data: icon.data } : null,
+    shape: shape
+      ? { name: shape.name, mood: shape.mood, data: shape.data }
+      : null,
+  };
+}
+
 async function draftOne(
   variant: (typeof VARIANTS)[number],
   intake: IntakeAnswers,
-  theme: Partial<ThemeSelection>,
+  resolved: ResolvedTheme,
   memoryContext: string
 ) {
   let lastErr: unknown = null;
@@ -51,7 +81,7 @@ async function draftOne(
     try {
       const raw = await runAgent({
         system,
-        prompt: drafterUserPrompt(intake, theme, variant),
+        prompt: drafterUserPrompt(intake, resolved, variant),
         maxTokens: 16000,
       });
       const html = extractHtml(raw);
@@ -102,8 +132,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const resolved = await resolveTheme(body.theme);
+
     const settled = await Promise.all(
-      VARIANTS.map((v) => draftOne(v, body.intake, body.theme, memoryContext))
+      VARIANTS.map((v) => draftOne(v, body.intake, resolved, memoryContext))
     );
 
     const drafts = settled

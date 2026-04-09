@@ -1,10 +1,4 @@
 import type { IntakeAnswers, ThemeSelection } from "../types";
-import {
-  BUTTON_PACKS,
-  COLOR_PACKS,
-  FONT_PACKS,
-  ICON_PACKS,
-} from "../theme-packs";
 
 export function intakeBrief(intake: IntakeAnswers): string {
   return `
@@ -23,24 +17,48 @@ PAGE COUNT: ${intake.pageCount ?? "unknown"}
 `.trim();
 }
 
-export function themeBrief(theme: Partial<ThemeSelection>): string {
-  const color = COLOR_PACKS.find((p) => p.id === theme.colorPackId);
-  const font = FONT_PACKS.find((p) => p.id === theme.fontPackId);
-  const button = BUTTON_PACKS.find((p) => p.id === theme.buttonPackId);
-  const icon = ICON_PACKS.find((p) => p.id === theme.iconPackId);
+/**
+ * Build a brief from already-resolved Pack records (looked up via packById
+ * in the API route, so this function stays pure and isomorphic).
+ */
+export type ResolvedTheme = {
+  color?: { name: string; mood: string; data: any } | null;
+  font?: { name: string; mood: string; data: any } | null;
+  button?: { name: string; mood: string; data: any } | null;
+  icon?: { name: string; mood: string; data: any } | null;
+  shape?: { name: string; mood: string; data: any } | null;
+};
 
-  return `
-COLOR PACK: ${color?.name} — ${color?.mood}
-  bg:${color?.colors.bg} surface:${color?.colors.surface} ink:${color?.colors.ink} muted:${color?.colors.muted} accent:${color?.colors.accent} accentAlt:${color?.colors.accentAlt}
-FONT PACK: ${font?.name} — ${font?.mood}
-  display:"${font?.display}" body:"${font?.body}"
-  google-font-href: ${font?.googleHref}
-BUTTON PACK: ${button?.name} — ${button?.mood}
-  css:
-${button?.css}
-ICON PACK: ${icon?.name} — ${icon?.mood}
-  available lucide icons: ${icon?.icons.join(", ")}
-`.trim();
+export function themeBrief(theme: ResolvedTheme): string {
+  const parts: string[] = [];
+  if (theme.color) {
+    const c = theme.color.data;
+    parts.push(
+      `COLOR PACK: ${theme.color.name} — ${theme.color.mood}\n  bg:${c.bg} surface:${c.surface} ink:${c.ink} muted:${c.muted} accent:${c.accent} accentAlt:${c.accentAlt}`
+    );
+  }
+  if (theme.font) {
+    const f = theme.font.data;
+    parts.push(
+      `FONT PACK: ${theme.font.name} — ${theme.font.mood}\n  display:"${f.display}" body:"${f.body}"\n  google-font-href: ${f.googleHref}`
+    );
+  }
+  if (theme.button) {
+    parts.push(
+      `BUTTON PACK: ${theme.button.name} — ${theme.button.mood}\n  css:\n${theme.button.data.css}`
+    );
+  }
+  if (theme.shape) {
+    parts.push(
+      `SHAPE PACK: ${theme.shape.name} — ${theme.shape.mood}\n  css:\n${theme.shape.data.css}\n  (use on <body> or a backdrop div via class .shape-bg)`
+    );
+  }
+  if (theme.icon) {
+    parts.push(
+      `ICON PACK: ${theme.icon.name} — ${theme.icon.mood}\n  available lucide icons: ${(theme.icon.data.icons || []).join(", ")}`
+    );
+  }
+  return parts.join("\n");
 }
 
 export const DRAFTER_SYSTEM = `You are a senior web designer-engineer. You output a single complete, self-contained HTML document for one web page based on a business brief and selected design packs.
@@ -87,7 +105,7 @@ Quality bar: this is NOT a wireframe. It is a shippable single-page website. Be 
 
 export function drafterUserPrompt(
   intake: IntakeAnswers,
-  theme: Partial<ThemeSelection>,
+  theme: ResolvedTheme,
   variant: { label: string; concept: string }
 ): string {
   return `BUSINESS BRIEF
@@ -101,16 +119,36 @@ VARIANT ${variant.label}: ${variant.concept}
 Produce a complete HTML document for this variant. Start your response with "<!doctype html>".`;
 }
 
-export const SUBAGENT_DEFINITIONS: {
-  name: string;
+/**
+ * Specialist subagents that each produce a SINGLE-CATEGORY patch of changes
+ * as JSON. They run in PARALLEL on the original draft. A synthesizer then
+ * combines all patches into the final HTML.
+ */
+export const SPECIALIST_SUBAGENTS: {
+  name: "designer" | "layout" | "backend" | "tester" | "debugger";
   role: string;
-  instruction: (html: string, intake: IntakeAnswers, theme: Partial<ThemeSelection>) => string;
+  instruction: (
+    html: string,
+    intake: IntakeAnswers,
+    theme: Partial<ThemeSelection>
+  ) => string;
 }[] = [
   {
     name: "designer",
     role: "Polishes visual hierarchy, spacing, color application, and typographic rhythm.",
     instruction: (html) =>
-      `You are the DESIGNER subagent. Refine the visual hierarchy of this HTML: spacing, typographic rhythm, color application. Do NOT restructure the document. Return the complete updated HTML only.
+      `You are the DESIGNER specialist. Analyze this HTML and return a JSON object describing visual hierarchy improvements.
+
+Return JSON ONLY:
+{
+  "notes": "2-3 sentences on what you'd improve",
+  "cssAdditions": "additional CSS rules to append to the existing <style> — focus on spacing, rhythm, type scale, accent color usage",
+  "selectorChanges": [
+    {"selector": "existing css selector", "action": "replace|delete|append", "newContent": "replacement HTML or styles"}
+  ]
+}
+
+Do NOT rewrite the whole document. Only propose targeted changes.
 
 CURRENT HTML:
 ${html}`,
@@ -119,20 +157,36 @@ ${html}`,
     name: "layout",
     role: "Fixes structural issues and responsive behavior.",
     instruction: (html) =>
-      `You are the LAYOUT subagent. Add responsive @media rules (mobile at 640px), fix any structural issues, and ensure nothing overflows. Return the complete updated HTML only.
+      `You are the LAYOUT specialist. Analyze this HTML and return a JSON object with responsive + structural fixes.
+
+Return JSON ONLY:
+{
+  "notes": "2-3 sentences",
+  "cssAdditions": "additional @media rules for mobile (<=640px) and tablet (<=1024px); fix overflow or alignment bugs",
+  "selectorChanges": []
+}
 
 CURRENT HTML:
 ${html}`,
   },
   {
     name: "backend",
-    role: "Scaffolds API placeholders or commerce hooks if needed.",
+    role: "Scaffolds form/commerce hooks without JS.",
     instruction: (html, intake) =>
-      `You are the BACKEND subagent. ${
-        intake.sellsProducts === "yes"
-          ? "Add a clear checkout/buy CTA block with data-action hooks (data-action='checkout') for future wiring."
-          : "Add a simple contact form with data-action='contact' to the CTA section."
-      } Do not add JS. Return the complete updated HTML only.
+      `You are the BACKEND specialist. Return JSON with the correct form/action block for this business.
+
+${
+  intake.sellsProducts === "yes"
+    ? "This business sells products. Propose a checkout CTA block with data-action='checkout'."
+    : "This business needs leads. Propose a simple contact form with data-action='contact'."
+}
+
+Return JSON ONLY:
+{
+  "notes": "2 sentences",
+  "insertHtml": "a full <section class='action-block'>...</section> element to add near the final CTA",
+  "cssAdditions": "styles for the new section"
+}
 
 CURRENT HTML:
 ${html}`,
@@ -141,7 +195,14 @@ ${html}`,
     name: "tester",
     role: "Validates semantics and accessibility.",
     instruction: (html) =>
-      `You are the TESTER subagent. Check the HTML for accessibility issues: missing alt attributes, improper heading order, contrast concerns, missing aria labels. Fix what you find. Return the complete updated HTML only.
+      `You are the TESTER specialist. Audit this HTML for accessibility. Return JSON:
+{
+  "notes": "what you found",
+  "fixes": [
+    {"selector": "img without alt", "action": "addAttribute", "attribute": "alt", "value": "suggested alt"}
+  ],
+  "cssAdditions": "focus-visible styles, skip-link, any contrast tweaks"
+}
 
 CURRENT HTML:
 ${html}`,
@@ -150,64 +211,128 @@ ${html}`,
     name: "debugger",
     role: "Repairs markup and style bugs.",
     instruction: (html) =>
-      `You are the DEBUGGER subagent. Find any unclosed tags, broken CSS rules, or obvious bugs and fix them. Return the complete updated HTML only.
-
-CURRENT HTML:
-${html}`,
-  },
-  {
-    name: "presenter",
-    role: "Final polish pass + adds subtle entrance animations.",
-    instruction: (html) =>
-      `You are the PRESENTER subagent. Add tasteful CSS-only entrance animations (fade + slide-up with keyframes) to the hero and major sections, ensure the final document is polished and ready to publish.
-
-CRITICAL: All animations MUST auto-start on page load. You are forbidden from using:
-- animation-play-state: paused (breaks the page — there is no JS to unpause)
-- class names like .animate-on-scroll, .is-visible, .in-view (same reason)
-- IntersectionObserver, script tags, or any JavaScript at all
-- data-aos, data-scroll, or any attributes expecting JS
-
-Use only: @keyframes + animation: ... both; + animation-delay for staggering. Every element must be visible by the time its animation finishes. Audit the current HTML: if you find any animation-play-state:paused or scroll-trigger class, REMOVE the pause and remove the class so the animation runs on load.
-
-Return the complete updated HTML only.
+      `You are the DEBUGGER specialist. Scan for broken CSS rules, unclosed tags, z-index issues, or obvious bugs. Return JSON:
+{
+  "notes": "issues found",
+  "cssAdditions": "CSS fixes",
+  "selectorChanges": []
+}
 
 CURRENT HTML:
 ${html}`,
   },
 ];
 
-export const CURATOR_SYSTEM = `You are a senior brand strategist and art director. Given a business brief and a curated library of design packs, recommend the 3 best color packs, 3 best font packs, 2 best button packs, and 2 best icon packs for this specific business.
+export const SYNTHESIZER_SYSTEM = `You are the PRESENTER / SYNTHESIZER agent. You receive an original HTML draft plus a bundle of specialist patches from five parallel subagents (designer, layout, backend, tester, debugger). Your job is to merge all patches into a single polished HTML document and add tasteful CSS-only entrance animations.
 
-You must return VALID JSON only — no commentary, no code fences, no explanation outside the JSON.
+MERGE RULES:
+- Start from the ORIGINAL HTML and apply the specialist patches.
+- cssAdditions from each patch should be appended to the existing <style> block.
+- insertHtml from the backend patch should be inserted in the CTA area.
+- fixes/selectorChanges should be applied where possible.
+- When patches conflict, prefer the accessibility/bug fixes over cosmetic ones.
+- Keep all original content. Do not truncate.
 
-Schema:
-{
-  "color": [{"id": "pack-id", "reason": "one concrete sentence explaining the fit"}],
-  "font": [{"id": "pack-id", "reason": "one concrete sentence explaining the fit"}],
-  "button": [{"id": "pack-id", "reason": "one concrete sentence explaining the fit"}],
-  "icon": [{"id": "pack-id", "reason": "one concrete sentence explaining the fit"}],
-  "overallReasoning": "2-3 sentences explaining the overall aesthetic direction and why it fits the business, audience, and purpose"
+ANIMATION RULES — CRITICAL:
+- All animations MUST auto-start on page load using @keyframes + animation: ... both;
+- NEVER use animation-play-state: paused.
+- NEVER use .animate-on-scroll, .is-visible, .in-view or any scroll-trigger class pattern.
+- NEVER add <script> tags or any JavaScript.
+- Stagger section reveals with animation-delay.
+- Every element must be visible when its animation finishes.
+
+OUTPUT:
+Return the COMPLETE final HTML document only — <!doctype html> through </html>. No commentary, no code fences, no preamble.`;
+
+export function synthesizerPrompt(
+  originalHtml: string,
+  patches: Array<{ name: string; patch: any; error?: string }>
+): string {
+  const patchBlocks = patches
+    .map(
+      (p) =>
+        `### ${p.name.toUpperCase()} PATCH${p.error ? ` (failed: ${p.error})` : ""}\n${p.error ? "(skipped)" : JSON.stringify(p.patch, null, 2)}`
+    )
+    .join("\n\n");
+
+  return `ORIGINAL HTML:
+${originalHtml}
+
+SPECIALIST PATCHES:
+${patchBlocks}
+
+Synthesize the final polished HTML document.`;
 }
 
-Return recommendations in ranked order (best first). Use only pack IDs from the library provided. Reasoning must reference the business, audience, or purpose — not generic platitudes.`;
+export const GENERATIVE_CURATOR_SYSTEM = `You are a senior brand strategist and art director. Given a business brief, you design BESPOKE design packs for this specific business — not generic templates. You may ALSO reference curated packs from the provided library when one is a genuinely perfect fit, but prefer to generate new custom packs most of the time. Variety matters: never produce the same palette or font pairing twice in a row.
 
-export function curatorUserPrompt(intake: IntakeAnswers): string {
+Return VALID JSON ONLY — no commentary, no code fences, no explanation outside the JSON. Schema:
+
+{
+  "overallReasoning": "2-3 sentences about the aesthetic direction for this specific business",
+  "color": [
+    {
+      "name": "custom name",
+      "mood": "one phrase",
+      "bg": "#hex", "surface": "#hex", "ink": "#hex",
+      "muted": "#hex", "accent": "#hex", "accentAlt": "#hex",
+      "reason": "why this fits the business"
+    }
+  ],
+  "font": [
+    {
+      "name": "custom name",
+      "mood": "one phrase",
+      "display": "Google Font family name",
+      "body": "Google Font family name",
+      "googleHref": "https://fonts.googleapis.com/css2?family=...&display=swap",
+      "sampleDisplay": "sample headline",
+      "sampleBody": "sample body copy",
+      "reason": "why this fits"
+    }
+  ],
+  "button": [
+    {
+      "name": "custom name",
+      "mood": "one phrase",
+      "css": ".btn{...} .btn:hover{...}",
+      "sampleLabel": "Click me",
+      "reason": "why this fits"
+    }
+  ],
+  "icon": [
+    { "id": "curated-icon-pack-id-from-library", "reason": "..." }
+  ],
+  "shape": [
+    {
+      "name": "custom name",
+      "mood": "one phrase",
+      "css": ".shape-bg{...}",
+      "reason": "why this fits"
+    }
+  ]
+}
+
+REQUIREMENTS:
+- 3 color packs (all with REAL hex codes that work together — check contrast between ink and bg). Use distinct moods.
+- 3 font packs with real Google Fonts. The googleHref must be a valid URL to fonts.googleapis.com/css2 with the exact families. Mix serifs, sans, and displays across the three.
+- 2 button packs with complete valid CSS for .btn and .btn:hover. Use var(--ink), var(--bg), var(--accent) as placeholders.
+- 2 icon packs — pick from the curated library IDs (icons are hard to generate).
+- 2 shape packs with complete valid CSS for .shape-bg. Use background-image, pattern URIs, or SVG data URIs. Use var(--bg), var(--surface), var(--accent).
+- Every 'reason' must reference the specific business, audience, or purpose — never "modern and clean" type platitudes.
+- Names should be evocative (2-3 words), not generic ("Warm Terracotta", not "Color Pack 1").`;
+
+export function generativeCuratorPrompt(
+  intake: IntakeAnswers,
+  iconLibrary: Array<{ id: string; name: string; mood: string }>
+): string {
   return `BUSINESS BRIEF
 ${intakeBrief(intake)}
 
-AVAILABLE COLOR PACKS
-${COLOR_PACKS.map((p) => `- ${p.id}: "${p.name}" — ${p.mood}. bg:${p.colors.bg}, accent:${p.colors.accent}`).join("\n")}
+CURATED ICON LIBRARY (pick 2 by id):
+${iconLibrary.map((p) => `- ${p.id}: "${p.name}" — ${p.mood}`).join("\n")}
 
-AVAILABLE FONT PACKS
-${FONT_PACKS.map((p) => `- ${p.id}: "${p.name}" — ${p.mood}. display:${p.display}, body:${p.body}`).join("\n")}
-
-AVAILABLE BUTTON PACKS
-${BUTTON_PACKS.map((p) => `- ${p.id}: "${p.name}" — ${p.mood}`).join("\n")}
-
-AVAILABLE ICON PACKS
-${ICON_PACKS.map((p) => `- ${p.id}: "${p.name}" — ${p.mood}`).join("\n")}
-
-Recommend 3 color packs, 3 font packs, 2 button packs, and 2 icon packs. JSON only.`;
+Now design 3 color packs, 3 font packs, 2 button packs, 2 shape packs, and pick 2 icon pack IDs. JSON only.`;
 }
 
 export function editorPrompt(

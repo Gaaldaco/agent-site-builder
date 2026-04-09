@@ -63,6 +63,7 @@ export type ThemeSelection = {
   fontPackId: string;
   buttonPackId: string;
   iconPackId: string;
+  shapePackId: string;
 };
 
 export type ThemeRecommendation = {
@@ -70,7 +71,19 @@ export type ThemeRecommendation = {
   font: Array<{ id: string; reason: string }>;
   button: Array<{ id: string; reason: string }>;
   icon: Array<{ id: string; reason: string }>;
+  shape: Array<{ id: string; reason: string }>;
   overallReasoning: string;
+};
+
+export type PackKind = "color" | "font" | "button" | "icon" | "shape";
+
+export type Pack = {
+  id: string;
+  kind: PackKind;
+  name: string;
+  mood: string;
+  source: "curated" | "generated" | "user";
+  data: Record<string, any>;
 };
 
 export type Draft = {
